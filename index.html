@@ -168,6 +168,12 @@
             border: 2px solid #ffeeba;
         }
         
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 2px solid #f5c6cb;
+        }
+        
         .room-id-display {
             background: #f8f9fa;
             padding: 20px;
@@ -184,10 +190,11 @@
         }
         
         .room-id-display .id {
-            font-size: 1.8em;
+            font-size: 1.5em;
             font-weight: 700;
             color: #667eea;
             font-family: 'Courier New', monospace;
+            word-break: break-all;
         }
         
         .stats {
@@ -223,6 +230,18 @@
             50% { opacity: 0.5; }
         }
         
+        .debug-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 0.85em;
+            color: #666;
+            font-family: 'Courier New', monospace;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        
         .volume-indicator {
             height: 10px;
             background: #e0e0e0;
@@ -255,12 +274,7 @@
         
         <!-- Broadcaster Section -->
         <div id="broadcaster-section" class="section active">
-            <div class="input-group">
-                <label>Room Name (Optional)</label>
-                <input type="text" id="room-name" placeholder="My Speech Room">
-            </div>
-            
-            <button class="btn btn-primary" onclick="startBroadcasting()">
+            <button class="btn btn-primary" id="start-broadcast-btn" onclick="startBroadcasting()">
                 Start Broadcasting
             </button>
             
@@ -290,6 +304,8 @@
                 <button class="btn btn-danger" onclick="stopBroadcasting()">
                     Stop Broadcasting
                 </button>
+                
+                <div class="debug-info" id="broadcast-debug"></div>
             </div>
         </div>
         
@@ -297,10 +313,10 @@
         <div id="listener-section" class="section">
             <div class="input-group">
                 <label>Enter Room ID</label>
-                <input type="text" id="room-id-input" placeholder="Enter broadcaster's room ID">
+                <input type="text" id="room-id-input" placeholder="Paste broadcaster's Room ID here">
             </div>
             
-            <button class="btn btn-primary" onclick="joinRoom()">
+            <button class="btn btn-primary" id="join-btn" onclick="joinRoom()">
                 Join & Listen
             </button>
             
@@ -321,7 +337,9 @@
                 </button>
             </div>
             
-            <audio id="audio-player" autoplay></audio>
+            <div class="debug-info" id="listener-debug"></div>
+            
+            <audio id="audio-player" autoplay playsinline></audio>
         </div>
     </div>
     
@@ -332,6 +350,17 @@
         let currentMode = 'broadcaster';
         let audioContext;
         let analyser;
+        
+        // Debug logging
+        function log(section, message) {
+            console.log(`[${section}] ${message}`);
+            const debugEl = document.getElementById(section + '-debug');
+            if (debugEl) {
+                const time = new Date().toLocaleTimeString();
+                debugEl.innerHTML += `[${time}] ${message}<br>`;
+                debugEl.scrollTop = debugEl.scrollHeight;
+            }
+        }
         
         function switchMode(mode) {
             currentMode = mode;
@@ -353,8 +382,12 @@
         }
         
         async function startBroadcasting() {
+            log('broadcast', 'Starting broadcast...');
+            showStatus('broadcast-status', 'Requesting microphone access...', 'info');
+            
             try {
                 // Request microphone access
+                log('broadcast', 'Requesting microphone...');
                 localStream = await navigator.mediaDevices.getUserMedia({ 
                     audio: {
                         echoCancellation: true,
@@ -363,12 +396,20 @@
                     } 
                 });
                 
+                log('broadcast', 'Microphone access granted');
+                showStatus('broadcast-status', 'Initializing connection...', 'info');
+                
                 // Initialize PeerJS
-                peer = new Peer();
+                log('broadcast', 'Creating peer connection...');
+                peer = new Peer({
+                    debug: 2
+                });
                 
                 peer.on('open', (id) => {
+                    log('broadcast', `Peer opened with ID: ${id}`);
                     document.getElementById('broadcaster-id').textContent = id;
                     document.getElementById('broadcast-info').style.display = 'block';
+                    document.getElementById('start-broadcast-btn').style.display = 'none';
                     
                     showStatus('broadcast-status', 'Broadcasting started! Share your Room ID with listeners.', 'success');
                     
@@ -377,30 +418,46 @@
                 });
                 
                 peer.on('call', (call) => {
+                    log('broadcast', `Incoming call from: ${call.peer}`);
                     // Answer the call with our audio stream
                     call.answer(localStream);
                     connections.push(call);
                     updateListenerCount();
                     
                     call.on('close', () => {
+                        log('broadcast', `Call closed from: ${call.peer}`);
                         connections = connections.filter(c => c !== call);
                         updateListenerCount();
+                    });
+                    
+                    call.on('error', (err) => {
+                        log('broadcast', `Call error: ${err.type}`);
                     });
                 });
                 
                 peer.on('error', (err) => {
-                    showStatus('broadcast-status', 'Error: ' + err.message, 'warning');
+                    log('broadcast', `Peer error: ${err.type} - ${err.message}`);
+                    showStatus('broadcast-status', 'Error: ' + err.message, 'error');
+                });
+                
+                peer.on('disconnected', () => {
+                    log('broadcast', 'Peer disconnected');
+                    showStatus('broadcast-status', 'Connection lost. Trying to reconnect...', 'warning');
+                    peer.reconnect();
                 });
                 
             } catch (err) {
-                showStatus('broadcast-status', 'Could not access microphone. Please allow microphone access.', 'warning');
+                log('broadcast', `Error: ${err.message}`);
+                showStatus('broadcast-status', 'Could not access microphone. Please allow microphone access and try again.', 'error');
                 console.error(err);
             }
         }
         
         function stopBroadcasting() {
+            log('broadcast', 'Stopping broadcast');
             cleanup();
             document.getElementById('broadcast-info').style.display = 'none';
+            document.getElementById('start-broadcast-btn').style.display = 'block';
             showStatus('broadcast-status', 'Broadcasting stopped.', 'info');
         }
         
@@ -412,20 +469,66 @@
                 return;
             }
             
+            log('listener', `Attempting to join room: ${roomId}`);
+            showStatus('listener-status', 'Connecting...', 'info');
+            document.getElementById('join-btn').disabled = true;
+            
             try {
                 // Initialize PeerJS
-                peer = new Peer();
+                log('listener', 'Creating peer connection...');
+                peer = new Peer({
+                    debug: 2,
+                    config: {
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:global.stun.twilio.com:3478' }
+                        ]
+                    }
+                });
                 
-                peer.on('open', () => {
-                    // Call the broadcaster
+                peer.on('open', (myId) => {
+                    log('listener', `My peer ID: ${myId}`);
+                    log('listener', `Calling broadcaster: ${roomId}`);
+                    showStatus('listener-status', 'Calling broadcaster...', 'info');
+                    
+                    // Call the broadcaster - pass null as we're only listening
                     const call = peer.call(roomId, null);
                     
+                    if (!call) {
+                        log('listener', 'Failed to create call');
+                        showStatus('listener-status', 'Failed to connect. Check the Room ID.', 'error');
+                        document.getElementById('join-btn').disabled = false;
+                        return;
+                    }
+                    
+                    log('listener', 'Call initiated, waiting for stream...');
+                    
+                    let streamReceived = false;
+                    
                     call.on('stream', (remoteStream) => {
+                        log('listener', 'Stream received!');
+                        streamReceived = true;
+                        
                         // Play the remote audio stream
                         const audioPlayer = document.getElementById('audio-player');
                         audioPlayer.srcObject = remoteStream;
                         
+                        // Ensure audio plays
+                        audioPlayer.play()
+                            .then(() => {
+                                log('listener', 'Audio playback started');
+                            })
+                            .catch(e => {
+                                log('listener', `Autoplay prevented: ${e.message}`);
+                                showStatus('listener-status', 'Connected! Tap here to play audio.', 'warning');
+                                document.getElementById('listener-status').onclick = () => {
+                                    audioPlayer.play();
+                                    showStatus('listener-status', '', 'success');
+                                };
+                            });
+                        
                         document.getElementById('listener-info').style.display = 'block';
+                        document.getElementById('join-btn').style.display = 'none';
                         showStatus('listener-status', '', 'success');
                         
                         // Setup volume indicator for remote stream
@@ -433,58 +536,94 @@
                     });
                     
                     call.on('error', (err) => {
-                        showStatus('listener-status', 'Could not connect to room. Please check the Room ID.', 'warning');
+                        log('listener', `Call error: ${err.type}`);
+                        showStatus('listener-status', `Connection error: ${err.type}`, 'error');
+                        document.getElementById('join-btn').disabled = false;
                     });
                     
                     call.on('close', () => {
+                        log('listener', 'Call closed');
                         showStatus('listener-status', 'Connection closed by broadcaster.', 'warning');
                         document.getElementById('listener-info').style.display = 'none';
+                        document.getElementById('join-btn').style.display = 'block';
+                        document.getElementById('join-btn').disabled = false;
                     });
+                    
+                    // Timeout if no stream received
+                    setTimeout(() => {
+                        if (!streamReceived) {
+                            log('listener', 'Connection timeout - no stream received');
+                            showStatus('listener-status', 'Connection timeout. The broadcaster may be offline, or your network is blocking the connection.', 'error');
+                            document.getElementById('join-btn').disabled = false;
+                        }
+                    }, 15000);
                 });
                 
                 peer.on('error', (err) => {
-                    showStatus('listener-status', 'Connection error: ' + err.message, 'warning');
+                    log('listener', `Peer error: ${err.type} - ${err.message}`);
+                    showStatus('listener-status', `Connection error: ${err.type}`, 'error');
+                    document.getElementById('join-btn').disabled = false;
+                });
+                
+                peer.on('disconnected', () => {
+                    log('listener', 'Peer disconnected');
+                    showStatus('listener-status', 'Connection lost. Trying to reconnect...', 'warning');
+                    peer.reconnect();
                 });
                 
             } catch (err) {
-                showStatus('listener-status', 'Error connecting to room.', 'warning');
+                log('listener', `Error: ${err.message}`);
+                showStatus('listener-status', 'Error connecting to room.', 'error');
                 console.error(err);
+                document.getElementById('join-btn').disabled = false;
             }
         }
         
         function leaveRoom() {
+            log('listener', 'Leaving room');
             cleanup();
             document.getElementById('listener-info').style.display = 'none';
+            document.getElementById('join-btn').style.display = 'block';
+            document.getElementById('join-btn').disabled = false;
             showStatus('listener-status', 'Left the room.', 'info');
         }
         
         function setupVolumeIndicator(stream, barId) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            analyser = audioContext.createAnalyser();
-            const source = audioContext.createMediaStreamSource(stream);
-            source.connect(analyser);
-            analyser.fftSize = 256;
-            
-            const bufferLength = analyser.frequencyBinCount;
-            const dataArray = new Uint8Array(bufferLength);
-            
-            function updateVolume() {
-                if (!analyser) return;
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
                 
-                analyser.getByteFrequencyData(dataArray);
-                const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-                const percentage = (average / 255) * 100;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
                 
-                document.getElementById(barId).style.width = percentage + '%';
+                function updateVolume() {
+                    if (!analyser) return;
+                    
+                    analyser.getByteFrequencyData(dataArray);
+                    const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+                    const percentage = (average / 255) * 100;
+                    
+                    const bar = document.getElementById(barId);
+                    if (bar) {
+                        bar.style.width = percentage + '%';
+                    }
+                    
+                    requestAnimationFrame(updateVolume);
+                }
                 
-                requestAnimationFrame(updateVolume);
+                updateVolume();
+            } catch (err) {
+                console.error('Volume indicator error:', err);
             }
-            
-            updateVolume();
         }
         
         function updateListenerCount() {
-            document.getElementById('listener-count').textContent = connections.length;
+            const count = connections.length;
+            document.getElementById('listener-count').textContent = count;
+            log('broadcast', `Listener count: ${count}`);
         }
         
         function showStatus(elementId, message, type) {
@@ -507,18 +646,24 @@
                 peer = null;
             }
             
-            connections.forEach(conn => conn.close());
+            connections.forEach(conn => {
+                try {
+                    conn.close();
+                } catch(e) {}
+            });
             connections = [];
             
             if (audioContext) {
-                audioContext.close();
+                try {
+                    audioContext.close();
+                } catch(e) {}
                 audioContext = null;
             }
             
             analyser = null;
             
             const audioPlayer = document.getElementById('audio-player');
-            if (audioPlayer.srcObject) {
+            if (audioPlayer && audioPlayer.srcObject) {
                 audioPlayer.srcObject = null;
             }
         }

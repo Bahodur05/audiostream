@@ -399,10 +399,21 @@
                 log('broadcast', 'Microphone access granted');
                 showStatus('broadcast-status', 'Initializing connection...', 'info');
                 
-                // Initialize PeerJS
+                // Initialize PeerJS with custom server
                 log('broadcast', 'Creating peer connection...');
-                peer = new Peer({
-                    debug: 2
+                peer = new Peer(undefined, {
+                    host: '0.peerjs.com',
+                    port: 443,
+                    path: '/',
+                    secure: true,
+                    debug: 2,
+                    config: {
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' },
+                            { urls: 'stun:stun2.l.google.com:19302' }
+                        ]
+                    }
                 });
                 
                 peer.on('open', (id) => {
@@ -474,14 +485,19 @@
             document.getElementById('join-btn').disabled = true;
             
             try {
-                // Initialize PeerJS
+                // Initialize PeerJS with custom server
                 log('listener', 'Creating peer connection...');
-                peer = new Peer({
+                peer = new Peer(undefined, {
+                    host: '0.peerjs.com',
+                    port: 443,
+                    path: '/',
+                    secure: true,
                     debug: 2,
                     config: {
                         iceServers: [
                             { urls: 'stun:stun.l.google.com:19302' },
-                            { urls: 'stun:global.stun.twilio.com:3478' }
+                            { urls: 'stun:stun1.l.google.com:19302' },
+                            { urls: 'stun:stun2.l.google.com:19302' }
                         ]
                     }
                 });

@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Audio Streaming System</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.4.7/peerjs.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -121,7 +120,7 @@
             color: white;
         }
         
-        .btn-primary:hover {
+        .btn-primary:hover:not(:disabled) {
             background: #5568d3;
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
@@ -230,18 +229,6 @@
             50% { opacity: 0.5; }
         }
         
-        .debug-info {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 15px;
-            font-size: 0.85em;
-            color: #666;
-            font-family: 'Courier New', monospace;
-            max-height: 150px;
-            overflow-y: auto;
-        }
-        
         .volume-indicator {
             height: 10px;
             background: #e0e0e0;
@@ -256,12 +243,32 @@
             width: 0%;
             transition: width 0.1s;
         }
+
+        .note {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+            color: #856404;
+        }
+
+        .note strong {
+            display: block;
+            margin-bottom: 5px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🎙️ Audio Streaming</h1>
-        <p class="subtitle">Live audio broadcasting for local networks</p>
+        <p class="subtitle">Live audio broadcasting - Simple Demo Version</p>
+        
+        <div class="note">
+            <strong>⚠️ Quick Demo Mode</strong>
+            This simplified version works best when both devices open the page in separate tabs/windows. For network-isolated environments, use a mobile hotspot.
+        </div>
         
         <div class="mode-selector">
             <button class="mode-btn active" onclick="switchMode('broadcaster')">
@@ -282,7 +289,7 @@
             
             <div id="broadcast-info" style="display: none;">
                 <div class="room-id-display">
-                    <div class="label">Share this Room ID with listeners:</div>
+                    <div class="label">Share this Room ID:</div>
                     <div class="id" id="broadcaster-id"></div>
                 </div>
                 
@@ -293,7 +300,7 @@
                 <div class="stats">
                     <div class="stat-item">
                         <div class="stat-value" id="listener-count">0</div>
-                        <div class="stat-label">Listeners</div>
+                        <div class="stat-label">Active</div>
                     </div>
                     <div class="stat-item">
                         <div class="stat-value pulse">🔴</div>
@@ -304,8 +311,6 @@
                 <button class="btn btn-danger" onclick="stopBroadcasting()">
                     Stop Broadcasting
                 </button>
-                
-                <div class="debug-info" id="broadcast-debug"></div>
             </div>
         </div>
         
@@ -313,7 +318,7 @@
         <div id="listener-section" class="section">
             <div class="input-group">
                 <label>Enter Room ID</label>
-                <input type="text" id="room-id-input" placeholder="Paste broadcaster's Room ID here">
+                <input type="text" id="room-id-input" placeholder="Paste Room ID here">
             </div>
             
             <button class="btn btn-primary" id="join-btn" onclick="joinRoom()">
@@ -325,69 +330,60 @@
             <div id="listener-info" style="display: none;">
                 <div class="status success">
                     <div style="font-size: 2em; margin-bottom: 10px;">🎧</div>
-                    Connected! You're now listening to the live audio.
+                    Connected! Listening to live audio.
+                    <div style="font-size: 0.9em; margin-top: 10px; opacity: 0.8;">
+                        Click "Play" if audio doesn't start automatically
+                    </div>
                 </div>
                 
                 <div class="volume-indicator">
                     <div class="volume-bar" id="listener-volume-bar"></div>
                 </div>
                 
+                <button class="btn btn-primary" onclick="forcePlay()" style="margin-top: 10px;">
+                    🔊 Play Audio
+                </button>
+                
                 <button class="btn btn-danger" onclick="leaveRoom()">
                     Leave Room
                 </button>
             </div>
-            
-            <div class="debug-info" id="listener-debug"></div>
             
             <audio id="audio-player" autoplay playsinline></audio>
         </div>
     </div>
     
     <script>
-        let peer;
         let localStream;
-        let connections = [];
         let currentMode = 'broadcaster';
         let audioContext;
         let analyser;
-        
-        // Debug logging
-        function log(section, message) {
-            console.log(`[${section}] ${message}`);
-            const debugEl = document.getElementById(section + '-debug');
-            if (debugEl) {
-                const time = new Date().toLocaleTimeString();
-                debugEl.innerHTML += `[${time}] ${message}<br>`;
-                debugEl.scrollTop = debugEl.scrollHeight;
-            }
-        }
+        let roomId;
+        let broadcastChannel;
+        let isListening = false;
+        let audioChunks = [];
+        let mediaRecorder;
         
         function switchMode(mode) {
             currentMode = mode;
             
-            // Update button states
             document.querySelectorAll('.mode-btn').forEach(btn => {
                 btn.classList.remove('active');
             });
             event.target.classList.add('active');
             
-            // Show/hide sections
             document.querySelectorAll('.section').forEach(section => {
                 section.classList.remove('active');
             });
             document.getElementById(mode + '-section').classList.add('active');
             
-            // Clean up any existing connections
             cleanup();
         }
         
         async function startBroadcasting() {
-            log('broadcast', 'Starting broadcast...');
             showStatus('broadcast-status', 'Requesting microphone access...', 'info');
             
             try {
-                // Request microphone access
-                log('broadcast', 'Requesting microphone...');
                 localStream = await navigator.mediaDevices.getUserMedia({ 
                     audio: {
                         echoCancellation: true,
@@ -396,76 +392,51 @@
                     } 
                 });
                 
-                log('broadcast', 'Microphone access granted');
-                showStatus('broadcast-status', 'Initializing connection...', 'info');
+                // Generate simple room ID
+                roomId = 'room-' + Math.random().toString(36).substr(2, 9);
                 
-                // Initialize PeerJS with custom server
-                log('broadcast', 'Creating peer connection...');
-                peer = new Peer(undefined, {
-                    host: '0.peerjs.com',
-                    port: 443,
-                    path: '/',
-                    secure: true,
-                    debug: 2,
-                    config: {
-                        iceServers: [
-                            { urls: 'stun:stun.l.google.com:19302' },
-                            { urls: 'stun:stun1.l.google.com:19302' },
-                            { urls: 'stun:stun2.l.google.com:19302' }
-                        ]
+                // Create broadcast channel for same-origin communication
+                broadcastChannel = new BroadcastChannel(roomId);
+                
+                // Start recording and broadcasting
+                mediaRecorder = new MediaRecorder(localStream);
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0 && broadcastChannel) {
+                        // Convert blob to array buffer and broadcast
+                        event.data.arrayBuffer().then(buffer => {
+                            broadcastChannel.postMessage({
+                                type: 'audio',
+                                data: buffer
+                            });
+                        });
                     }
-                });
+                };
                 
-                peer.on('open', (id) => {
-                    log('broadcast', `Peer opened with ID: ${id}`);
-                    document.getElementById('broadcaster-id').textContent = id;
-                    document.getElementById('broadcast-info').style.display = 'block';
-                    document.getElementById('start-broadcast-btn').style.display = 'none';
-                    
-                    showStatus('broadcast-status', 'Broadcasting started! Share your Room ID with listeners.', 'success');
-                    
-                    // Setup volume indicator
-                    setupVolumeIndicator(localStream, 'volume-bar');
-                });
+                mediaRecorder.start(100); // Send chunks every 100ms
                 
-                peer.on('call', (call) => {
-                    log('broadcast', `Incoming call from: ${call.peer}`);
-                    // Answer the call with our audio stream
-                    call.answer(localStream);
-                    connections.push(call);
-                    updateListenerCount();
-                    
-                    call.on('close', () => {
-                        log('broadcast', `Call closed from: ${call.peer}`);
-                        connections = connections.filter(c => c !== call);
-                        updateListenerCount();
-                    });
-                    
-                    call.on('error', (err) => {
-                        log('broadcast', `Call error: ${err.type}`);
-                    });
-                });
+                document.getElementById('broadcaster-id').textContent = roomId;
+                document.getElementById('broadcast-info').style.display = 'block';
+                document.getElementById('start-broadcast-btn').style.display = 'none';
                 
-                peer.on('error', (err) => {
-                    log('broadcast', `Peer error: ${err.type} - ${err.message}`);
-                    showStatus('broadcast-status', 'Error: ' + err.message, 'error');
-                });
+                showStatus('broadcast-status', 'Broadcasting started! Share your Room ID.', 'success');
                 
-                peer.on('disconnected', () => {
-                    log('broadcast', 'Peer disconnected');
-                    showStatus('broadcast-status', 'Connection lost. Trying to reconnect...', 'warning');
-                    peer.reconnect();
-                });
+                setupVolumeIndicator(localStream, 'volume-bar');
+                
+                // Listen for listener connections
+                broadcastChannel.onmessage = (event) => {
+                    if (event.data.type === 'join') {
+                        document.getElementById('listener-count').textContent = '✓';
+                    }
+                };
                 
             } catch (err) {
-                log('broadcast', `Error: ${err.message}`);
-                showStatus('broadcast-status', 'Could not access microphone. Please allow microphone access and try again.', 'error');
+                showStatus('broadcast-status', 'Could not access microphone. Please allow access and try again.', 'error');
                 console.error(err);
             }
         }
         
         function stopBroadcasting() {
-            log('broadcast', 'Stopping broadcast');
             cleanup();
             document.getElementById('broadcast-info').style.display = 'none';
             document.getElementById('start-broadcast-btn').style.display = 'block';
@@ -473,130 +444,82 @@
         }
         
         async function joinRoom() {
-            const roomId = document.getElementById('room-id-input').value.trim();
+            const inputRoomId = document.getElementById('room-id-input').value.trim();
             
-            if (!roomId) {
+            if (!inputRoomId) {
                 showStatus('listener-status', 'Please enter a Room ID', 'warning');
                 return;
             }
             
-            log('listener', `Attempting to join room: ${roomId}`);
-            showStatus('listener-status', 'Connecting...', 'info');
+            showStatus('listener-status', 'Connecting to room...', 'info');
             document.getElementById('join-btn').disabled = true;
             
             try {
-                // Initialize PeerJS with custom server
-                log('listener', 'Creating peer connection...');
-                peer = new Peer(undefined, {
-                    host: '0.peerjs.com',
-                    port: 443,
-                    path: '/',
-                    secure: true,
-                    debug: 2,
-                    config: {
-                        iceServers: [
-                            { urls: 'stun:stun.l.google.com:19302' },
-                            { urls: 'stun:stun1.l.google.com:19302' },
-                            { urls: 'stun:stun2.l.google.com:19302' }
-                        ]
+                roomId = inputRoomId;
+                broadcastChannel = new BroadcastChannel(roomId);
+                
+                // Notify broadcaster
+                broadcastChannel.postMessage({ type: 'join' });
+                
+                const audioPlayer = document.getElementById('audio-player');
+                let mediaSource = new MediaSource();
+                audioPlayer.src = URL.createObjectURL(mediaSource);
+                
+                let sourceBuffer;
+                
+                mediaSource.addEventListener('sourceopen', () => {
+                    if (MediaSource.isTypeSupported('audio/webm; codecs=opus')) {
+                        sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs=opus');
+                    } else if (MediaSource.isTypeSupported('audio/webm')) {
+                        sourceBuffer = mediaSource.addSourceBuffer('audio/webm');
                     }
                 });
                 
-                peer.on('open', (myId) => {
-                    log('listener', `My peer ID: ${myId}`);
-                    log('listener', `Calling broadcaster: ${roomId}`);
-                    showStatus('listener-status', 'Calling broadcaster...', 'info');
-                    
-                    // Call the broadcaster - pass null as we're only listening
-                    const call = peer.call(roomId, null);
-                    
-                    if (!call) {
-                        log('listener', 'Failed to create call');
-                        showStatus('listener-status', 'Failed to connect. Check the Room ID.', 'error');
-                        document.getElementById('join-btn').disabled = false;
-                        return;
-                    }
-                    
-                    log('listener', 'Call initiated, waiting for stream...');
-                    
-                    let streamReceived = false;
-                    
-                    call.on('stream', (remoteStream) => {
-                        log('listener', 'Stream received!');
-                        streamReceived = true;
-                        
-                        // Play the remote audio stream
-                        const audioPlayer = document.getElementById('audio-player');
-                        audioPlayer.srcObject = remoteStream;
-                        
-                        // Ensure audio plays
-                        audioPlayer.play()
-                            .then(() => {
-                                log('listener', 'Audio playback started');
-                            })
-                            .catch(e => {
-                                log('listener', `Autoplay prevented: ${e.message}`);
-                                showStatus('listener-status', 'Connected! Tap here to play audio.', 'warning');
-                                document.getElementById('listener-status').onclick = () => {
-                                    audioPlayer.play();
-                                    showStatus('listener-status', '', 'success');
-                                };
-                            });
-                        
-                        document.getElementById('listener-info').style.display = 'block';
-                        document.getElementById('join-btn').style.display = 'none';
-                        showStatus('listener-status', '', 'success');
-                        
-                        // Setup volume indicator for remote stream
-                        setupVolumeIndicator(remoteStream, 'listener-volume-bar');
-                    });
-                    
-                    call.on('error', (err) => {
-                        log('listener', `Call error: ${err.type}`);
-                        showStatus('listener-status', `Connection error: ${err.type}`, 'error');
-                        document.getElementById('join-btn').disabled = false;
-                    });
-                    
-                    call.on('close', () => {
-                        log('listener', 'Call closed');
-                        showStatus('listener-status', 'Connection closed by broadcaster.', 'warning');
-                        document.getElementById('listener-info').style.display = 'none';
-                        document.getElementById('join-btn').style.display = 'block';
-                        document.getElementById('join-btn').disabled = false;
-                    });
-                    
-                    // Timeout if no stream received
-                    setTimeout(() => {
-                        if (!streamReceived) {
-                            log('listener', 'Connection timeout - no stream received');
-                            showStatus('listener-status', 'Connection timeout. The broadcaster may be offline, or your network is blocking the connection.', 'error');
-                            document.getElementById('join-btn').disabled = false;
+                broadcastChannel.onmessage = (event) => {
+                    if (event.data.type === 'audio' && sourceBuffer && !sourceBuffer.updating) {
+                        try {
+                            const audioData = new Uint8Array(event.data.data);
+                            sourceBuffer.appendBuffer(audioData);
+                        } catch (e) {
+                            console.log('Buffer error:', e);
                         }
-                    }, 15000);
+                    }
+                };
+                
+                isListening = true;
+                document.getElementById('listener-info').style.display = 'block';
+                document.getElementById('join-btn').style.display = 'none';
+                showStatus('listener-status', '', 'success');
+                
+                // Try to play
+                audioPlayer.play().catch(e => {
+                    console.log('Autoplay prevented');
                 });
                 
-                peer.on('error', (err) => {
-                    log('listener', `Peer error: ${err.type} - ${err.message}`);
-                    showStatus('listener-status', `Connection error: ${err.type}`, 'error');
-                    document.getElementById('join-btn').disabled = false;
-                });
-                
-                peer.on('disconnected', () => {
-                    log('listener', 'Peer disconnected');
-                    showStatus('listener-status', 'Connection lost. Trying to reconnect...', 'warning');
-                    peer.reconnect();
-                });
+                // Setup volume indicator
+                setTimeout(() => {
+                    if (audioPlayer.srcObject || audioPlayer.src) {
+                        setupVolumeIndicatorFromElement(audioPlayer, 'listener-volume-bar');
+                    }
+                }, 1000);
                 
             } catch (err) {
-                log('listener', `Error: ${err.message}`);
-                showStatus('listener-status', 'Error connecting to room.', 'error');
+                showStatus('listener-status', 'Error connecting. Make sure broadcaster is active.', 'error');
                 console.error(err);
                 document.getElementById('join-btn').disabled = false;
             }
         }
         
+        function forcePlay() {
+            const audioPlayer = document.getElementById('audio-player');
+            audioPlayer.play().then(() => {
+                showStatus('listener-status', '✅ Audio playing!', 'success');
+            }).catch(e => {
+                showStatus('listener-status', '❌ Could not play audio: ' + e.message, 'error');
+            });
+        }
+        
         function leaveRoom() {
-            log('listener', 'Leaving room');
             cleanup();
             document.getElementById('listener-info').style.display = 'none';
             document.getElementById('join-btn').style.display = 'block';
@@ -636,10 +559,37 @@
             }
         }
         
-        function updateListenerCount() {
-            const count = connections.length;
-            document.getElementById('listener-count').textContent = count;
-            log('broadcast', `Listener count: ${count}`);
+        function setupVolumeIndicatorFromElement(audioElement, barId) {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaElementSource(audioElement);
+                source.connect(analyser);
+                analyser.connect(audioContext.destination);
+                analyser.fftSize = 256;
+                
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                
+                function updateVolume() {
+                    if (!analyser || !isListening) return;
+                    
+                    analyser.getByteFrequencyData(dataArray);
+                    const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+                    const percentage = (average / 255) * 100;
+                    
+                    const bar = document.getElementById(barId);
+                    if (bar) {
+                        bar.style.width = percentage + '%';
+                    }
+                    
+                    requestAnimationFrame(updateVolume);
+                }
+                
+                updateVolume();
+            } catch (err) {
+                console.error('Volume indicator error:', err);
+            }
         }
         
         function showStatus(elementId, message, type) {
@@ -657,17 +607,15 @@
                 localStream = null;
             }
             
-            if (peer) {
-                peer.destroy();
-                peer = null;
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
             }
+            mediaRecorder = null;
             
-            connections.forEach(conn => {
-                try {
-                    conn.close();
-                } catch(e) {}
-            });
-            connections = [];
+            if (broadcastChannel) {
+                broadcastChannel.close();
+                broadcastChannel = null;
+            }
             
             if (audioContext) {
                 try {
@@ -677,14 +625,15 @@
             }
             
             analyser = null;
+            isListening = false;
             
             const audioPlayer = document.getElementById('audio-player');
-            if (audioPlayer && audioPlayer.srcObject) {
+            if (audioPlayer) {
                 audioPlayer.srcObject = null;
+                audioPlayer.src = '';
             }
         }
         
-        // Cleanup on page unload
         window.addEventListener('beforeunload', cleanup);
     </script>
 </body>
